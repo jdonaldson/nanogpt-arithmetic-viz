@@ -57,7 +57,7 @@ def decode(ids: list[int]) -> str:
 
 @dataclass
 class GPTConfig:
-    block_size: int = 32
+    block_size: int = 64
     vocab_size: int = VOCAB_SIZE
     n_layer: int = 6
     n_head: int = 4
@@ -144,17 +144,20 @@ class GPT(nn.Module):
 # ─── Data ───────────────────────────────────────────────────────────
 
 
+N_MAX = 9  # operand range 0..N_MAX (inclusive), 16² = 256 pairs/operator
+
+
 def arithmetic_sample(rng: random.Random) -> str:
     """Sample one arithmetic prompt — division has b > 0 (no div-by-zero
-    in training).  Floor division for ÷."""
+    in training).  Floor division for ÷.  Operands 0..N_MAX."""
     op = rng.choice("+-*/")
     if op == "/":
-        a = rng.randint(0, 9)
-        b = rng.randint(1, 9)  # b > 0 only
+        a = rng.randint(0, N_MAX)
+        b = rng.randint(1, N_MAX)  # b > 0 only
         c = a // b
     else:
-        a = rng.randint(0, 9)
-        b = rng.randint(0, 9)
+        a = rng.randint(0, N_MAX)
+        b = rng.randint(0, N_MAX)
         if op == "+":
             c = a + b
         elif op == "-":
@@ -188,13 +191,13 @@ def make_batch(data, block_size, batch_size, device):
 # ─── Train ─────────────────────────────────────────────────────────
 
 
-def train(steps: int = 8000, batch_size: int = 64, lr: float = 3e-4,
+def train(steps: int = 15000, batch_size: int = 64, lr: float = 3e-4,
           device: str = "cpu") -> GPT:
     cfg = GPTConfig()
     model = GPT(cfg).to(device)
     print(f"params: {model.num_params() / 1e6:.2f}M, vocab: {VOCAB_SIZE}")
 
-    corpus = build_corpus(n_samples=25000)
+    corpus = build_corpus(n_samples=60000)
     data = torch.tensor(encode(corpus), dtype=torch.long)
     print(f"corpus chars: {len(corpus):,}, tokens: {len(data):,}")
 
@@ -216,8 +219,8 @@ def train(steps: int = 8000, batch_size: int = 64, lr: float = 3e-4,
         correct = 0
         valid = 0
         with torch.no_grad():
-            for a in range(10):
-                for b in range(10):
+            for a in range(N_MAX + 1):
+                for b in range(N_MAX + 1):
                     if op_char == "/" and b == 0:
                         continue  # skip div-by-0 in eval
                     prompt = f"\n{a}{op_char}{b}="
@@ -272,8 +275,8 @@ def capture_states(model: GPT, op_char: str, op_name: str, device: str):
     model.eval()
     rows = {"a": [], "b": [], "value": [], "layer": [], "H": []}
     with torch.no_grad():
-        for a in range(10):
-            for b in range(10):
+        for a in range(N_MAX + 1):
+            for b in range(N_MAX + 1):
                 prompt = f"\n{a}{op_char}{b}="
                 ids = torch.tensor([encode(prompt)], dtype=torch.long,
                                    device=device)
@@ -322,8 +325,8 @@ def capture_predictions(model: GPT, device: str):
         cnt_pred = {}
         cnt_exp = {}
         mismatches = []
-        for a in range(10):
-            for b in range(10):
+        for a in range(N_MAX + 1):
+            for b in range(N_MAX + 1):
                 prompt = f"\n{a}{op_char}{b}="
                 ids = torch.tensor([encode(prompt)], dtype=torch.long,
                                    device=device)
@@ -360,7 +363,7 @@ def capture_predictions(model: GPT, device: str):
         if op_char == "/":
             # Highlight what the model emits for div-by-zero
             print(f"  division-by-zero predictions (OOD):")
-            for a in range(10):
+            for a in range(N_MAX + 1):
                 print(f"    {a}/0 → {pred_chars[f'{a},0']!r}")
 
     (DATA_OUT / "predicted_chars.json").write_text(json.dumps(out, indent=2))

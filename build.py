@@ -38,6 +38,7 @@ FILES = {
     "add": ROOT / "hidden_states_add.npz",
     "sub": ROOT / "hidden_states_sub.npz",
 }
+ATTENTION_FILE = ROOT / "attention.npz"
 N_LAYERS = 6
 K_NN = 10
 N_DIM = 3  # 2 -> classic u_1×u_2 plane; 3 -> u_1×u_2×u_3 cube
@@ -436,6 +437,53 @@ def compute_joint_coords(H_stacks_per_op, n_dim=N_DIM):
     return coords
 
 
+def compute_joint_pca_coords(H_stacks_per_op, n_dim=N_DIM):
+    """Joint PCA across pooled hidden states per layer, Procrustes-
+    aligned between layers."""
+    ops = list(H_stacks_per_op.keys())
+    n_layers, n_pairs, _ = H_stacks_per_op[ops[0]].shape
+    n_total = n_pairs * len(ops)
+    coords = np.zeros((n_layers, n_total, n_dim))
+    for L in range(n_layers):
+        H_joint = np.concatenate(
+            [H_stacks_per_op[op][L] for op in ops], axis=0)
+        Hc = H_joint - H_joint.mean(axis=0)
+        U, S, _ = np.linalg.svd(Hc, full_matrices=False)
+        X = U[:, :n_dim] * S[:n_dim]
+        scale = np.linalg.norm(X) / np.sqrt(n_dim * n_total) + 1e-12
+        coords[L] = X / scale
+    for L in range(1, n_layers):
+        R = procrustes_R(coords[L], coords[L - 1])
+        coords[L] = coords[L] @ R
+    return coords
+
+
+def compute_joint_umap_coords(H_stacks_per_op, n_dim=N_DIM,
+                               n_neighbors=15, min_dist=0.1, seed=42):
+    """Joint UMAP across pooled hidden states per layer, Procrustes-
+    aligned between layers.  Stochastic but seeded for reproducibility."""
+    import umap as umap_lib
+    ops = list(H_stacks_per_op.keys())
+    n_layers, n_pairs, _ = H_stacks_per_op[ops[0]].shape
+    n_total = n_pairs * len(ops)
+    coords = np.zeros((n_layers, n_total, n_dim))
+    for L in range(n_layers):
+        H_joint = np.concatenate(
+            [H_stacks_per_op[op][L] for op in ops], axis=0)
+        reducer = umap_lib.UMAP(
+            n_components=n_dim, n_neighbors=n_neighbors,
+            min_dist=min_dist, random_state=seed,
+        )
+        X = reducer.fit_transform(H_joint)
+        X = X - X.mean(axis=0)
+        scale = np.linalg.norm(X) / np.sqrt(n_dim * n_total) + 1e-12
+        coords[L] = X / scale
+    for L in range(1, n_layers):
+        R = procrustes_R(coords[L], coords[L - 1])
+        coords[L] = coords[L] @ R
+    return coords
+
+
 def split_joint_coords(joint_coords, n_pairs, ops=("mul", "add", "sub")):
     """Slice (n_layers, n_pairs * n_ops, n_dim) back into per-op chunks."""
     return {op: joint_coords[:, i * n_pairs:(i + 1) * n_pairs, :]
@@ -476,6 +524,58 @@ def compute_aligned_coords(H_stack, ref=None, n_dim=N_DIM):
             coords[L] = coords[L] @ R0
 
     return coords
+
+
+def _align_passes(coords, ref=None):
+    """Apply the same within-op + cross-op Procrustes passes used by
+    compute_aligned_coords, given already-projected per-layer coords."""
+    n_layers = coords.shape[0]
+    n_pairs = coords.shape[1]
+    n_dim = coords.shape[2]
+    out = coords.copy().astype(float)
+    # Center + total-Frobenius-normalize per layer
+    for L in range(n_layers):
+        out[L] = out[L] - out[L].mean(axis=0)
+        scale = np.linalg.norm(out[L]) / np.sqrt(n_dim * n_pairs) + 1e-12
+        out[L] = out[L] / scale
+    # Within-op
+    for L in range(1, n_layers):
+        R = procrustes_R(out[L], out[L - 1])
+        out[L] = out[L] @ R
+    # Cross-op
+    if ref is not None:
+        R0 = procrustes_R(out[0], ref)
+        for L in range(n_layers):
+            out[L] = out[L] @ R0
+    return out
+
+
+def compute_aligned_pca_coords(H_stack, ref=None, n_dim=N_DIM):
+    """Per-layer PCA projection, same alignment passes as the Laplacian
+    version.  Used by the scrolly view when projection method = pca."""
+    n_layers, n_pairs, _ = H_stack.shape
+    coords = np.zeros((n_layers, n_pairs, n_dim))
+    for L in range(n_layers):
+        Hc = H_stack[L] - H_stack[L].mean(axis=0)
+        U, S, _ = np.linalg.svd(Hc, full_matrices=False)
+        coords[L] = U[:, :n_dim] * S[:n_dim]
+    return _align_passes(coords, ref=ref)
+
+
+def compute_aligned_umap_coords(H_stack, ref=None, n_dim=N_DIM,
+                                 n_neighbors=15, min_dist=0.1, seed=42):
+    """Per-layer UMAP projection, same alignment passes as the Laplacian
+    version.  Used by the scrolly view when projection method = umap."""
+    import umap as umap_lib
+    n_layers, n_pairs, _ = H_stack.shape
+    coords = np.zeros((n_layers, n_pairs, n_dim))
+    k = min(n_neighbors, max(2, n_pairs - 1))
+    for L in range(n_layers):
+        reducer = umap_lib.UMAP(
+            n_components=n_dim, n_neighbors=k, min_dist=min_dist,
+            random_state=seed, n_jobs=1, init="spectral")
+        coords[L] = reducer.fit_transform(H_stack[L])
+    return _align_passes(coords, ref=ref)
 
 
 def answer_sign_class(op, a, b):
@@ -1003,21 +1103,28 @@ def build_stacked_3d_figure(joint_per_op, feature_data):
     for op, coords in joint_per_op.items():
         a = feature_data[op]["a"]
         b = feature_data[op]["b"]
+        preds = feature_data[op].get("predicted_char")
         n_pairs = len(a)
 
         # Interleave per-pair so each pair becomes a 6-point polyline
         # (L0 → L1 → ... → L5).  Use None separators to break the
         # polyline between pairs.
-        xs, ys, zs, hover = [], [], [], []
+        xs, ys, zs, hover, marker_colors = [], [], [], [], []
         for i in range(n_pairs):
+            pred = preds[i] if preds is not None else "?"
+            color = PRED_CHAR_HEX.get(pred, "#888888")
             for L in range(N_LAYERS):
                 xs.append(float(coords[L, i, 0]))
                 ys.append(float(coords[L, i, 1]))
                 zs.append(L * z_spacing)
-                hover.append(f"{op}  ({int(a[i])}, {int(b[i])})  L{L}")
+                hover.append(
+                    f"{op}  ({int(a[i])}, {int(b[i])})  "
+                    f"L{L}  pred=<b>{pred}</b>")
+                marker_colors.append(color)
             # Break polyline before next pair
             xs.append(None); ys.append(None); zs.append(None)
             hover.append("")
+            marker_colors.append("rgba(0,0,0,0)")
 
         base_hex = OP_COLORS_PY[op]
         rr = int(base_hex[1:3], 16)
@@ -1031,15 +1138,29 @@ def build_stacked_3d_figure(joint_per_op, feature_data):
             name=op,
             marker=dict(
                 size=2.8,
-                color=base_hex,
+                color=marker_colors,
                 symbol=OP_SYMBOLS_PY[op],
-                opacity=0.75,
+                opacity=0.85,
                 line=dict(width=0),
             ),
             line=dict(color=line_rgba, width=1.8),
             connectgaps=False,
             text=hover,
             hovertemplate="%{text}<extra></extra>",
+        ))
+
+    # Predicted-digit color legend (proxy traces).  These never render
+    # data (x=[None]) but appear in the legend so users can read the
+    # color → digit mapping.
+    for ch, hex_color in PRED_CHAR_HEX.items():
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None],
+            mode="markers",
+            name=f"pred = {ch}",
+            marker=dict(size=8, color=hex_color, symbol="circle",
+                        opacity=1.0, line=dict(width=0)),
+            showlegend=True,
+            hoverinfo="skip",
         ))
 
     # Layer labels along z-axis (light text for dark background)
@@ -1061,8 +1182,8 @@ def build_stacked_3d_figure(joint_per_op, feature_data):
 
     fig.update_layout(
         title=dict(
-            text=("All operators × all layers — joint Laplacian, "
-                  "stacked by layer on z-axis"),
+            text=("All operators × all layers — stacked by layer · "
+                  "markers colored by predicted digit"),
             x=0.02, font=dict(size=15, color=AX_LABEL),
         ),
         scene=dict(
@@ -1089,14 +1210,157 @@ def build_stacked_3d_figure(joint_per_op, feature_data):
         ),
         height=720, autosize=True,
         margin=dict(l=0, r=0, t=50, b=0),
-        legend=dict(orientation="h", yanchor="top", y=1.02,
-                    xanchor="right", x=1.0,
-                    title=dict(text="operator (click to toggle)",
-                               font=dict(color=AX_LABEL)),
-                    font=dict(color=AX_LABEL),
-                    bgcolor="rgba(37, 42, 49, 0.7)"),
+        legend=dict(orientation="v", yanchor="top", y=0.98,
+                    xanchor="left", x=0.0,
+                    title=dict(text="operator / predicted digit",
+                               font=dict(color=AX_LABEL, size=12)),
+                    font=dict(color=AX_LABEL, size=11),
+                    bgcolor="rgba(37, 42, 49, 0.7)",
+                    itemsizing="constant"),
         paper_bgcolor=SCENE_BG,
     )
+    return fig
+
+
+def load_attention():
+    """Load cached attention weights captured from the trained NanoGPT.
+
+    Returns dict {op: np.ndarray} with shapes (100, 6, 4, 4) =
+    (pair, layer, head, key_pos).  key_pos = [a, op_char, b, =].
+    Returns None if the cache doesn't exist.
+    """
+    if not ATTENTION_FILE.exists():
+        return None
+    d = np.load(ATTENTION_FILE)
+    return {op: d[f"weights_{op}"] for op in ("mul", "add", "sub")}
+
+
+def build_attention_figure(attn_per_op):
+    """Heatmap of mean =-position attention over all 100 pairs.
+
+    Rows = (layer, head) — 24 rows ordered as L0h0..L5h3 with L0 at the
+    top so it reads in causal order top-to-bottom.
+    Columns = key position [a, op, b, =].
+    Three traces, one per operator; an op-selector lives in JS and just
+    toggles trace visibility.
+    """
+    AX_LABEL = "#cfd3da"
+    SCENE_BG = "#252a31"
+    WALL = "#1f232a"
+    GRID = "#3d4148"
+
+    OP_CHAR = {"mul": "×", "add": "+", "sub": "−"}
+    key_labels = ["a", "op", "b", "="]
+    row_labels = [f"L{L} h{h}" for L in range(N_LAYERS) for h in range(4)]
+    # Row 0 at the top: reverse row order in the y array so the heatmap's
+    # natural y=0 (bottom) plots L5h3 and y=23 (top) plots L0h0.
+    y_idx = list(range(len(row_labels)))
+
+    fig = go.Figure()
+    for op in ("mul", "add", "sub"):
+        W = attn_per_op[op]              # (100, 6, 4, 4)
+        mean = W.mean(axis=0)            # (6, 4, 4)
+        # Flatten layer/head to a 24-row matrix, L0h0 first.
+        z = mean.reshape(N_LAYERS * 4, 4)
+        fig.add_trace(go.Heatmap(
+            z=z,
+            x=key_labels,
+            y=row_labels,
+            zmin=0.0, zmax=1.0,
+            colorscale="Magma",
+            colorbar=dict(
+                title=dict(text="mean attn", font=dict(color=AX_LABEL)),
+                tickfont=dict(color=AX_LABEL),
+                thickness=12, len=0.85,
+            ),
+            hovertemplate=(
+                f"<b>{OP_CHAR[op]}</b>  %{{y}}  →  key=%{{x}}<br>"
+                "mean attn = %{z:.2f}<extra></extra>"
+            ),
+            name=op,
+            visible=(op == "mul"),
+            xgap=2, ygap=1,
+        ))
+
+    # Layer-band annotations on the left: small text "L0".."L5" centered
+    # over each band of 4 head rows.  With autorange="reversed", L0h0 is
+    # at the top and L5h3 at the bottom; data y-values are L*4+h.
+    layer_annotations = []
+    for L in range(N_LAYERS):
+        center_y = L * 4 + 1.5
+        layer_annotations.append(dict(
+            x=-0.65, xref="x",
+            y=center_y, yref="y",
+            text=f"<b>L{L}</b>",
+            showarrow=False,
+            font=dict(color="#e0e3e8", size=14),
+            xanchor="right",
+        ))
+
+    buttons = []
+    for i, op in enumerate(("mul", "add", "sub")):
+        vis = [False, False, False]
+        vis[i] = True
+        buttons.append(dict(
+            label=f"  {OP_CHAR[op]}  ",
+            method="update",
+            args=[
+                {"visible": vis},
+                {"title.text":
+                    f"Attention from the <b>=</b> position · operator <b>{OP_CHAR[op]}</b>"},
+            ],
+        ))
+
+    fig.update_layout(
+        title=dict(
+            text="Attention from the <b>=</b> position · operator <b>×</b>",
+            x=0.02, font=dict(size=15, color=AX_LABEL),
+        ),
+        xaxis=dict(
+            title=dict(text="key position (what each head looks at)",
+                       font=dict(color=AX_LABEL)),
+            tickfont=dict(color=AX_LABEL, size=13),
+            side="top",
+            color=AX_LABEL,
+            showgrid=False,
+        ),
+        yaxis=dict(
+            title=dict(text="layer · head", font=dict(color=AX_LABEL)),
+            tickfont=dict(color=AX_LABEL, size=11),
+            autorange="reversed",
+            color=AX_LABEL,
+            showgrid=False,
+        ),
+        annotations=layer_annotations,
+        updatemenus=[dict(
+            type="buttons", direction="right",
+            x=0.0, xanchor="left",
+            y=1.12, yanchor="bottom",
+            buttons=buttons,
+            bgcolor="#1f232a",
+            bordercolor="#444",
+            font=dict(color=AX_LABEL, size=13),
+            pad=dict(l=0, r=0, t=2, b=2),
+            showactive=True,
+        )],
+        height=720, autosize=True,
+        margin=dict(l=70, r=10, t=110, b=20),
+        paper_bgcolor=SCENE_BG,
+        plot_bgcolor=WALL,
+    )
+
+    # Layer-band horizontal separators between L_{L-1}h3 and L_L h0
+    shapes = []
+    for L in range(1, N_LAYERS):
+        y_line = L * 4 - 0.5
+        shapes.append(dict(
+            type="line",
+            x0=-0.5, x1=3.5, xref="x",
+            y0=y_line, y1=y_line, yref="y",
+            line=dict(color="#5a606a", width=1),
+            layer="above",
+        ))
+    fig.update_layout(shapes=shapes)
     return fig
 
 
@@ -1166,6 +1430,14 @@ PAGE = """<!doctype html>
   }}
   .controls button.op.active {{
     background: var(--accent); color: white; border-color: var(--accent);
+  }}
+  .controls button.method {{
+    border: 1px solid #ccc; background: white; padding: 6px 12px;
+    border-radius: 4px; cursor: pointer; font-size: 12.5px;
+    font-family: inherit; color: #333;
+  }}
+  .controls button.method.active {{
+    background: #333; color: white; border-color: #333;
   }}
   .controls .sep {{
     width: 1px; height: 24px; background: #ccc; margin: 0 4px;
@@ -1303,6 +1575,42 @@ PAGE = """<!doctype html>
     padding: 0;
     overflow: hidden;
   }}
+  .proj-tabs {{
+    display: flex; gap: 6px; margin: 0 0 8px;
+    border-bottom: 1px solid #e6e6e6; padding-bottom: 0;
+  }}
+  .proj-tab {{
+    border: 1px solid #ccc; background: white;
+    padding: 7px 16px;
+    font-family: inherit; font-size: 13.5px; color: #444;
+    border-radius: 5px 5px 0 0;
+    cursor: pointer;
+    border-bottom: none;
+    margin-bottom: -1px;
+    transition: background 0.15s, color 0.15s;
+  }}
+  .proj-tab:hover {{ background: #f2f4f8; }}
+  .proj-tab.active {{
+    background: #252a31; color: white; border-color: #252a31;
+  }}
+  .proj-panel {{ display: none; }}
+  .proj-panel.active {{ display: block; }}
+  .proj-note {{
+    font-size: 13px; color: #666;
+    max-width: 950px; margin: 14px 0 0;
+    line-height: 1.55;
+  }}
+  .proj-note strong {{ color: #333; }}
+  .attn-note {{
+    font-size: 13.5px; color: #555;
+    max-width: 980px; line-height: 1.65;
+    margin: 4px 0 18px;
+    background: #f5f7fa; padding: 12px 16px;
+    border-left: 3px solid var(--accent);
+    border-radius: 0 4px 4px 0;
+  }}
+  .attn-note strong {{ color: #222; }}
+  .attn-note em {{ color: #444; font-style: italic; }}
   .intro-section {{
     max-width: 1100px; margin: 8px auto 0;
     padding: 16px 32px 24px;
@@ -1373,11 +1681,27 @@ PAGE = """<!doctype html>
     z-axis (L0 at the bottom, L5 at the top).  Each pair traces a
     six-point polyline up through the layers; one trace per operator.
     Click <strong>mul / add / sub</strong> in the legend to toggle.
-    Rotate to see how L0's clean three-cluster separation
-    (1-NN op-recovery = 100%) decays as the trajectories weave
-    together at higher layers (~51% by L5).
+    Three projection methods are shown — switch via the tabs below
+    to compare what each one surfaces about the same hidden states.
   </p>
-  <div id="fig-stacked3d" class="stacked-fig">{fig_stacked_html}</div>
+  <div class="proj-tabs">
+    <button class="proj-tab active" data-proj="lap">Joint Laplacian</button>
+    <button class="proj-tab" data-proj="pca">Joint PCA</button>
+    <button class="proj-tab" data-proj="umap">Joint UMAP</button>
+  </div>
+  <div id="fig-stacked3d" class="stacked-fig proj-panel active" data-proj="lap">{fig_stacked_html}</div>
+  <div id="fig-stacked3d-pca" class="stacked-fig proj-panel" data-proj="pca">{fig_stacked_pca_html}</div>
+  <div id="fig-stacked3d-umap" class="stacked-fig proj-panel" data-proj="umap">{fig_stacked_umap_html}</div>
+  <p class="proj-note">
+    <strong>Laplacian</strong>: smoothest eigenvectors of a kNN-graph
+    Laplacian — emphasizes graph cuts and manifold structure.
+    <strong>PCA</strong>: top variance directions — emphasizes the
+    spread of the cluster without needing graph connectivity.
+    <strong>UMAP</strong>: nonlinear, optimizes local-neighborhood
+    preservation with cluster-separation bias — emphasizes
+    populations of similar pairs.  Same hidden states; each method
+    reveals different aspects.
+  </p>
 </section>
 
 <section class="intro-section">
@@ -1579,6 +1903,11 @@ PAGE = """<!doctype html>
   <button id="btn-add" class="op" data-op="add">+ addition</button>
   <button id="btn-sub" class="op" data-op="sub">− subtraction</button>
   <div class="sep"></div>
+  <span class="label">Projection:</span>
+  <button class="method active" data-method="lap">Laplacian</button>
+  <button class="method" data-method="pca">PCA</button>
+  <button class="method" data-method="umap">UMAP</button>
+  <div class="sep"></div>
   <span class="label">Quick recolor:</span>
   <span class="color-pill" data-feature="sign_class">sign_class</span>
   <span class="color-pill" data-feature="max">max</span>
@@ -1611,6 +1940,36 @@ PAGE = """<!doctype html>
   </div>
 </div>
 
+<section class="stacked-section">
+  <h2>Where each layer's attention looks</h2>
+  <p>
+    Same trained model, but reading a different signal: the attention
+    weights from the <code>=</code>-token query to each of the four
+    key positions <code>[a, op, b, =]</code>, averaged across all 100
+    pairs.  Switch operators to see how the pattern shifts.
+  </p>
+  <p class="attn-note">
+    <strong>L0</strong> is undifferentiated — every head spreads
+    attention across operands and the op-token.
+    <strong>L1 h2</strong> is the operator-dispatcher head:
+    it attends to the op-token with weight <strong>0.97</strong>
+    (mul, add) or <strong>0.88</strong> (sub).  The same layer's
+    h1 routes one operand — operand <em>a</em> for mul/add, but
+    operand <em>b</em> for sub (the only non-commutative op).
+    <strong>L2</strong> heads h2/h3 read operand values with
+    op-token weight ≈ 0 — operator dispatch is done; values are
+    being pulled in.
+    <strong>L3 h0 for sub specifically</strong> attends to the
+    minuend at <strong>0.92</strong> — the asymmetric a-spike
+    that mul and add don't have.
+    <strong>L4</strong> is dominated by self-attention to
+    <code>=</code> — staging the answer inside the residual.
+    <strong>L5</strong> re-reads the op-token (sub's h1/h2 spend
+    0.42 / 0.48 on it) to gate the digit-vs-minus output path.
+  </p>
+  <div id="fig-attention" class="stacked-fig">{fig_attention_html}</div>
+</section>
+
 <footer>
   Per-layer Laplacian (u_1, u_2) of the <code>=</code>-token kNN graph
   (k=10) on 100 (a, b) pairs ∈ {{0..9}}².  Sign-aligned + Procrustes-
@@ -1624,14 +1983,17 @@ PAGE = """<!doctype html>
 <script>
 const FEATURE_META = {feature_meta_json};
 const FEATURE_DATA = {feature_data_json};
-const LAYER_DATA = {layer_data_json};
+const LAYER_DATA_BY_METHOD = {layer_data_by_method_json};
+const MINIMAP_RANGES_BY_METHOD = {minimap_ranges_by_method_json};
+let LAYER_DATA = LAYER_DATA_BY_METHOD["lap"];
+let MINIMAP_RANGES = MINIMAP_RANGES_BY_METHOD["lap"];
 const SIGN_CLASS_HEX = {sign_class_hex_json};
 const PRED_CHAR_HEX = {pred_char_hex_json};
 const OP_DEFAULT_FEATURE = {op_default_json};
 const HEX_COLORS = {hex_colors_json};       // [op][feature] -> [hex per pair]
-const MINIMAP_RANGES = {minimap_ranges_json}; // [op] -> {{x: [lo, hi], y: [lo, hi]}}
 const JOINT_LAYER_DATA = {joint_layer_data_json}; // [op].u1/u2/u3 = per-layer arrays from joint Laplacian (used by all-ops overlay)
 
+let currentMethod = "lap";
 let currentOp = "mul";
 let currentLayer = 0;
 let currentFeature = OP_DEFAULT_FEATURE[currentOp];
@@ -1870,6 +2232,26 @@ document.querySelectorAll('.controls button.op[data-op]').forEach(b => {{
   b.addEventListener('click', () => switchOp(b.dataset.op));
 }});
 
+function switchMethod(method) {{
+  if (method === currentMethod) return;
+  if (!LAYER_DATA_BY_METHOD[method]) return;
+  currentMethod = method;
+  LAYER_DATA = LAYER_DATA_BY_METHOD[method];
+  MINIMAP_RANGES = MINIMAP_RANGES_BY_METHOD[method];
+  document.querySelectorAll('.controls button.method').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.method === method));
+  // Re-render minimaps under the new projection.
+  renderAllMinimaps(currentOp);
+  highlightMinimapLayer(currentOp, currentLayer);
+  // Animate the active plot's points to the new projection at the
+  // currently-displayed layer.
+  animateTo(currentOp, currentLayer);
+}}
+
+document.querySelectorAll('.controls button.method').forEach(b => {{
+  b.addEventListener('click', () => switchMethod(b.dataset.method));
+}});
+
 // Delegate clicks on .color-pill anywhere on the page
 document.addEventListener('click', (e) => {{
   const pill = e.target.closest('.color-pill');
@@ -1877,6 +2259,25 @@ document.addEventListener('click', (e) => {{
     userPickedFeature = true;
     setFeature(pill.dataset.feature);
   }}
+}});
+
+// Projection-method tabs in the hero section
+document.querySelectorAll('.proj-tab').forEach(tab => {{
+  tab.addEventListener('click', () => {{
+    const proj = tab.dataset.proj;
+    document.querySelectorAll('.proj-tab').forEach(t =>
+      t.classList.toggle('active', t.dataset.proj === proj));
+    document.querySelectorAll('.proj-panel').forEach(p =>
+      p.classList.toggle('active', p.dataset.proj === proj));
+    // Resize the newly-visible Plotly so it lays out at full width
+    const active = document.querySelector(
+      '.proj-panel.active .js-plotly-plot');
+    if (active) {{
+      requestAnimationFrame(() => {{
+        try {{ Plotly.Plots.resize(active); }} catch (e) {{}}
+      }});
+    }}
+  }});
 }});
 
 window.addEventListener('load', () => {{
@@ -1984,44 +2385,95 @@ def main():
             out["u3"] = coords[:, :, 2].tolist()
         return out
 
-    # Process mul first — its L0 becomes the cross-op reference so
-    # add and sub start in the same orientation at L0.
-    print(f"  mul: computing aligned (N_DIM={N_DIM}) coords...")
-    H_mul, a_mul, b_mul = load_stack(FILES["mul"])
-    coords_mul = compute_aligned_coords(H_mul, ref=None)
-    mul_L0 = coords_mul[0]
+    # Load all H stacks up front so the three projection methods
+    # share them.
+    H_stacks_per_op = {}
+    ab_per_op = {}
+    for op in ["mul", "add", "sub"]:
+        H_op, a_op, b_op = load_stack(FILES[op])
+        H_stacks_per_op[op] = H_op
+        ab_per_op[op] = (a_op, b_op)
+    H_mul = H_stacks_per_op["mul"]
+    a_mul, b_mul = ab_per_op["mul"]
 
-    figs["mul"] = build_scroll_figure("mul", coords_mul, a_mul, b_mul)
-    feature_data["mul"] = compute_features("mul", a_mul, b_mul)
-    layer_data["mul"] = coords_to_jsdict(coords_mul)
+    # Build features once (op-only, not method-specific)
+    for op in ["mul", "add", "sub"]:
+        a_op, b_op = ab_per_op[op]
+        feature_data[op] = compute_features(op, a_op, b_op)
 
-    coords_by_op = {"mul": coords_mul}
+    # Compute per-op aligned coords for each projection method.
+    # mul's L0 (under each method) is the cross-op reference for that
+    # method, so add and sub start in the same orientation at L0.
+    METHOD_FNS = {
+        "lap": compute_aligned_coords,
+        "pca": compute_aligned_pca_coords,
+        "umap": compute_aligned_umap_coords,
+    }
+    METHOD_LABEL = {"lap": "Laplacian", "pca": "PCA", "umap": "UMAP"}
 
-    for op in ["add", "sub"]:
-        print(f"  {op}: computing aligned coords...")
-        H_stack, a, b = load_stack(FILES[op])
-        coords = compute_aligned_coords(H_stack, ref=mul_L0)
-        figs[op] = build_scroll_figure(op, coords, a, b)
-        feature_data[op] = compute_features(op, a, b)
-        layer_data[op] = coords_to_jsdict(coords)
-        coords_by_op[op] = coords
+    layer_data_by_method = {}
+    minimap_ranges_by_method = {}
+    coords_by_op_lap = {}  # kept for the initial scroll figs and stacked
 
-    print("  precomputing minimap colors and axis ranges...")
+    for method, fn in METHOD_FNS.items():
+        print(f"  computing per-op {METHOD_LABEL[method]} coords...")
+        coords_mul_m = fn(H_mul, ref=None)
+        mul_L0_m = coords_mul_m[0]
+        coords_by_op_m = {"mul": coords_mul_m}
+        layer_data_m = {"mul": coords_to_jsdict(coords_mul_m)}
+        for op in ["add", "sub"]:
+            coords = fn(H_stacks_per_op[op], ref=mul_L0_m)
+            coords_by_op_m[op] = coords
+            layer_data_m[op] = coords_to_jsdict(coords)
+        layer_data_by_method[method] = layer_data_m
+        minimap_ranges_by_method[method] = compute_minimap_ranges(coords_by_op_m)
+        if method == "lap":
+            coords_by_op_lap = coords_by_op_m
+
+    # The initial scroll figures render with the Laplacian view (default).
+    # Method switches mutate the figure's marker x/y/z via Plotly.animate
+    # in the JS, drawing from layer_data_by_method[currentMethod].
+    coords_mul = coords_by_op_lap["mul"]
+    for op in ["mul", "add", "sub"]:
+        a_op, b_op = ab_per_op[op]
+        figs[op] = build_scroll_figure(op, coords_by_op_lap[op], a_op, b_op)
+
+    layer_data = layer_data_by_method["lap"]
+    minimap_ranges = minimap_ranges_by_method["lap"]
+
+    print("  precomputing minimap colors...")
     hex_colors = compute_all_hex_colors(feature_data)
-    minimap_ranges = compute_minimap_ranges(coords_by_op)
 
     print("  computing joint Laplacian (ops pooled per layer)...")
-    H_stacks = {"mul": H_mul}
-    for op in ["add", "sub"]:
-        H_op, _, _ = load_stack(FILES[op])
-        H_stacks[op] = H_op
+    H_stacks = H_stacks_per_op
     joint_coords = compute_joint_coords(H_stacks)
     joint_per_op = split_joint_coords(joint_coords, n_pairs=coords_mul.shape[1])
     joint_layer_data = {op: coords_to_jsdict(joint_per_op[op])
                         for op in ["mul", "add", "sub"]}
 
-    print("  building stacked-3D figure...")
+    print("  computing joint PCA...")
+    joint_coords_pca = compute_joint_pca_coords(H_stacks)
+    joint_per_op_pca = split_joint_coords(joint_coords_pca,
+                                          n_pairs=coords_mul.shape[1])
+
+    print("  computing joint UMAP...")
+    joint_coords_umap = compute_joint_umap_coords(H_stacks)
+    joint_per_op_umap = split_joint_coords(joint_coords_umap,
+                                           n_pairs=coords_mul.shape[1])
+
+    print("  building stacked-3D figures (Laplacian / PCA / UMAP)...")
     fig_stacked = build_stacked_3d_figure(joint_per_op, feature_data)
+    fig_stacked_pca = build_stacked_3d_figure(joint_per_op_pca, feature_data)
+    fig_stacked_umap = build_stacked_3d_figure(joint_per_op_umap, feature_data)
+
+    print("  building attention heatmap...")
+    attn_per_op = load_attention()
+    if attn_per_op is not None:
+        fig_attention = build_attention_figure(attn_per_op)
+    else:
+        print(f"    (no attention cache at {ATTENTION_FILE} — "
+              "section will render empty placeholder)")
+        fig_attention = None
 
     print("  generating kNN graph image for intro...")
     knn_image_b64 = build_knn_graph_image()
@@ -2050,6 +2502,8 @@ def main():
         feature_meta_json=json.dumps(FEATURE_META),
         feature_data_json=json.dumps(feature_data),
         layer_data_json=json.dumps(layer_data),
+        layer_data_by_method_json=json.dumps(layer_data_by_method),
+        minimap_ranges_by_method_json=json.dumps(minimap_ranges_by_method),
         sign_class_hex_json=json.dumps({str(k): v for k, v in SIGN_CLASS_HEX.items()}),
         pred_char_hex_json=json.dumps(PRED_CHAR_HEX),
         op_default_json=json.dumps(OP_DEFAULT_FEATURE),
@@ -2057,6 +2511,14 @@ def main():
         minimap_ranges_json=json.dumps(minimap_ranges),
         joint_layer_data_json=json.dumps(joint_layer_data),
         fig_stacked_html=fig_to_html(fig_stacked, "fig-stacked3d-inner"),
+        fig_stacked_pca_html=fig_to_html(fig_stacked_pca,
+                                          "fig-stacked3d-pca-inner"),
+        fig_stacked_umap_html=fig_to_html(fig_stacked_umap,
+                                           "fig-stacked3d-umap-inner"),
+        fig_attention_html=(fig_to_html(fig_attention, "fig-attention-inner")
+                            if fig_attention is not None
+                            else "<p style='color:#999'>attention cache "
+                                 "missing; run extract_attention.py</p>"),
         method_image_b64=method_image_b64,
         knn_image_b64=knn_image_b64,
         k_image_b64=k_image_b64,
