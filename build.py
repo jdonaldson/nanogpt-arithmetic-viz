@@ -67,12 +67,8 @@ FEATURE_META = {
     "max":         {"scale": "Viridis", "cmin": 0,  "cmax": 9,  "label": "max(a, b)"},
     "sum":         {"scale": "Viridis", "cmin": 0,  "cmax": 18, "label": "a + b"},
     "abs_diff":    {"scale": "Viridis", "cmin": 0,  "cmax": 9,  "label": "|a − b|"},
-    "signed_diff": {"scale": "RdBu_r",  "cmin": -9, "cmax": 9,  "label": "a − b"},
     "prod":        {"scale": "Viridis", "cmin": 0,  "cmax": 81, "label": "a × b"},
-    "log_min":     {"scale": "Viridis", "cmin": 0,  "cmax": 2.31, "label": "log(min + 1)"},
-    "log_max":     {"scale": "Viridis", "cmin": 0,  "cmax": 2.31, "label": "log(max + 1)"},
-    "log_sum":     {"scale": "Viridis", "cmin": 0,  "cmax": 2.95, "label": "log(a + b + 1)"},
-    "log_prod":    {"scale": "Viridis", "cmin": 0,  "cmax": 4.41, "label": "log(a × b + 1)"},
+    "trunc_div":   {"scale": "Viridis", "cmin": 0,  "cmax": 9,  "label": "floor(a / b)"},
     "zero_flag":   {"scale": "Reds",    "cmin": 0,  "cmax": 1,  "label": "is zero pair?"},
     "sign_class":  {"kind": "categorical", "label": "answer sign class"},
     "multichar_answer": {"scale": "Reds", "cmin": 0, "cmax": 1,
@@ -110,327 +106,265 @@ PRED_CHAR_HEX = {
 
 LAYER_TEXT = {
     "mul": {
-        0: ("L0 — Magnitude composite cluster",
-            "<p>For mul, L0 is the (min, max) sub-lattice — operands "
-            "encoded as an unordered set.  Swap pairs (a, b) and "
-            "(b, a) collapse to within 8% of random-pair distance, so "
-            "100 raw pairs project to ~55 distinct spots.</p>"
-            "<p><strong>u_1</strong> is a magnitude composite: [prod] "
-            "R²=0.86, [min] 0.84, [sum] 0.78, [log_prod] 0.69.  "
-            "<strong>u_2</strong> picks up [zero_flag] (R²=0.62) — "
-            "zero pairs sit along one edge of the cluster.  "
-            "<strong>u_3</strong> carries [abs_diff] (R²=0.56) and "
-            "[max] (0.36).</p>"
-            "<p>The (u_1, u_2) plane is the classic V-shape: joint "
-            "R² onto ([min], [max]) = 0.63.  Zero arm runs up u_2, "
-            "main cluster runs right along u_1.</p>"
-            "<p>Extremes of u_1 are already digit-grouped: leftmost "
-            "10 are all zero pairs (predict <code>0</code>); rightmost "
-            "10 are the largest products (54, 56, 63, 64, 72) which "
-            "predict digits <strong>4–7</strong>.  Loosely clustered "
-            "by digit, sharpening downstream.</p>"
-            "<p>Click [multichar_answer] to see which 58 pairs will "
-            "need a tens-digit prediction at L5 — at L0 they're "
-            "spread through the magnitude axis, not yet grouped.  "
-            "Click [log_prod] for the log-magnitude axis: u_2 lifts "
-            "from R²=0.00 against raw [prod] to R²=0.23 against "
-            "log_prod, the early signature of L0's role as the "
-            "log encoder (causally: block 0's MLP decodes "
-            "log(a+1)/log(b+1) at R²=0.99 by L1).</p>"),
-        1: ("L1 — (min, max) grid rotates into (u_1, u_3)",
-            "<p>L1 keeps <strong>u_1</strong> as the magnitude axis: "
-            "[sum] R²=0.63, [prod] 0.62, [min] 0.60 — all roughly "
-            "equal weight.  But <strong>u_2 empties out</strong>: no "
-            "feature R² above 0.06 here.  <strong>u_3</strong> picks "
-            "up [abs_diff] (R²=0.49) and [max] (0.47).</p>"
-            "<p>The (min, max) grid that lived in (u_1, u_2) at L0 "
-            "has <strong>rotated into (u_1, u_3)</strong>: joint R² = "
-            "0.71, stronger than L0's 0.63.  Rotate the 3D view to "
-            "put u_3 horizontal and the operand grid pops out "
-            "clearly.</p>"
-            "<p>What's going on: block 1's attention dispatched the "
-            "operator (causal evidence — ≥91% operator-flip rate via "
-            "activation patching across operators).  But that dispatch "
-            "hasn't produced operator-specific computation yet.  "
-            "Block 1's MLP is in a preparation state — operands "
-            "log-encoded, operator known, no commitment.  "
-            "Zero-detection, which was on u_2 at L0, has faded; it "
-            "comes back at L2's annihilator phase.</p>"),
-        2: ("L2 — Annihilator phase: zero detection emerges",
-            "<p>At L2 zero detection shows up across the cluster: "
-            "[zero_flag] R²=0.36 on <strong>u_2</strong>, R²=0.52 on "
-            "<strong>u_3</strong>.  Magnitude still leads "
-            "<strong>u_1</strong> ([sum] 0.51, [prod] 0.48, [min] "
-            "0.45) but weaker than L0/L1.</p>"
-            "<p>Joint R²(u_1, u_2) → ([min], [max]) drops to 0.42 — "
-            "L0's V geometry is dissolving.  Block 2 attention is "
-            "pulling operand information into a zero-vs-nonzero "
-            "split.</p>"
-            "<p>Note on what's hidden: in the raw per-layer Laplacian "
-            "(unaligned), <em>u_1 IS zero_flag at L2 with R²=1.0</em>. "
-            "Procrustes alignment to L0 has rotated that direction "
-            "into u_2/u_3 to maintain smooth animation continuity.  "
-            "What you see in the plot — the 19 zero pairs starting "
-            "to peel into a sub-cluster in (u_2, u_3) — is that same "
-            "Fiedler-cut event, just visible on different axes.</p>"),
-        3: ("L3 — Annihilator gutter consolidated",
-            "<p>[zero_flag] dominates <strong>u_3</strong> (R²=0.56) "
-            "and is strong on <strong>u_2</strong> (R²=0.42).  "
-            "<strong>u_1</strong> retains partial magnitude ([sum] "
-            "0.49, [prod] 0.47, [min] 0.42) but is weakening.</p>"
-            "<p>This is the <em>annihilator gutter</em> layer — a "
-            "single 1-D direction (raw u_1 here) cleanly separates "
-            "the 19 zero pairs from the 81 non-zero pairs with "
-            "d'=8.5.  In aligned coords that gutter has rotated into "
-            "u_3.</p>"
-            "<p>Look at (u_2, u_3): zero pairs cluster in one corner; "
-            "non-zero pairs form the bulk.  u_1's extremes still "
-            "cluster by digit but loosely (top 10 predict 3–5, "
-            "bottom 10 predict 1–7).</p>"),
-        4: ("L4 — u_1 collapses, digit clustering survives",
-            "<p><strong>u_1 has lost feature meaning here</strong> — "
-            "top loading is [min] R²=0.04, [prod] 0.03.  The cluster "
-            "has rotated nearly 90° from L0's frame; Procrustes is "
-            "preserving the L0-aligned u_1 direction but no clean "
-            "feature lives there anymore.</p>"
-            "<p>[zero_flag] dominates <strong>u_3</strong> (R²=0.56) "
-            "and <strong>u_2</strong> (R²=0.42).  Cluster geometry "
-            "is mostly in the (u_2, u_3) plane.</p>"
-            "<p>Despite u_1 being feature-empty, its extremes are "
-            "<strong>pure single-digit clusters</strong>: top 10 by "
-            "u_1 all predict <code>2</code>, bottom 10 all predict "
-            "<code>1</code>.  The digit organization survives the "
-            "eigenvector reordering — what changed is which axis "
-            "carries it.  L4's MLP injects +1.57 along the correct-"
-            "digit direction for typical (non-zero) pairs.</p>"),
-        5: ("L5 — Digit corners are pure",
-            "<p>Same structure as L4: <strong>u_1</strong> is "
-            "feature-empty ([prod] R²=0.08), <strong>u_2/u_3</strong> "
-            "carry [zero_flag] (R²=0.44, 0.53).</p>"
-            "<p><strong>The digit corners are pure single-digit "
-            "clusters:</strong></p>"
-            "<ul>"
-            "<li>Top 10 by u_1 all predict <code>2</code>; bottom 10 "
-            "all predict <code>1</code></li>"
-            "<li>Top 10 by u_3 all predict <code>0</code>; bottom 10 "
-            "all predict <code>3</code></li>"
-            "</ul>"
-            "<p>Every extreme of the cluster is a single-digit pure "
-            "region — daylight between digit groups.  Click "
-            "[predicted_char] to see all 10 digit clusters at once.</p>"
-            "<p>L5's MLP writes +6 on the correct digit row and "
-            "−0.7 on each of the other 9.  Effective rank ~10 "
-            "matches the 10 digit rows of the unembedding head.  The "
-            "digit organization started loosely at L0 (extremes "
-            "contained 4-value digit ranges) and tightened into pure "
-            "single-digit corners by L5.</p>"),
+        0: ("L0 — Operand b on u_1, magnitude on u_2",
+            "<p>For the 4-op model, mul's L0 cluster is structured "
+            "with <strong>operand [b] on u_1</strong> (R²=0.48) — "
+            "the model has already separated operand positions on "
+            "its leading axis.  <strong>u_2</strong> also picks up "
+            "[b] (R²=0.49); the two leading axes together form an "
+            "operand-position basis.</p>"
+            "<p><strong>u_3</strong> is weak at L0 — [zero_flag] only "
+            "0.09, [sign_class] 0.09.  Zero detection hasn't begun.</p>"
+            "<p>Click [b] to see the operand-position gradient clearly.  "
+            "Click [a] for the orthogonal one (R² values are lower but "
+            "the pattern is visible).</p>"),
+        1: ("L1 — Magnitude takes over u_2",
+            "<p>u_1 keeps [b] (R²=0.49) — operand-position information "
+            "carried forward.  <strong>u_2 commits to magnitude</strong>: "
+            "[min] R²=0.81, [prod] 0.70, [sum] 0.69.  This is the "
+            "magnitude-composite axis that will stay dominant on u_2 "
+            "through L5.</p>"
+            "<p>[zero_flag] and [sign_class] move onto u_3 (R²=0.40 "
+            "each).  Block 1's attention has dispatched the operator "
+            "and the first operator-specific structure is appearing: "
+            "magnitude + zero/sign axes are now distinct.</p>"),
+        2: ("L2 — Same basis, zero detection refines",
+            "<p>Same structure as L1: u_1 = [b] (0.49), u_2 = [min] "
+            "(0.86) / [prod] (0.79) / [sum] (0.75), u_3 = [zero_flag] "
+            "(0.36).  The u_2 magnitude composite is sharpening.</p>"
+            "<p>Click [zero_flag] to see the 19 zero pairs split off "
+            "from the main cluster.  In the raw (unaligned) Laplacian "
+            "u_1 becomes zero_flag at L2 — but Procrustes alignment to "
+            "L0 keeps that direction rotated into u_3.</p>"),
+        3: ("L3 — Magnitude composite peaks",
+            "<p>u_2 is at its strongest: [min] R²=0.85, [prod] 0.76, "
+            "[sum] 0.69.  u_1 weakens to [max] (R²=0.22), "
+            "[pred_digit] (0.19).  u_3 has [zero_flag] = [sign_class] "
+            "= 0.46.</p>"
+            "<p>The 19 zero pairs form a clearly distinct sub-cluster "
+            "in (u_1, u_3).  Non-zero pairs spread along u_2 by "
+            "magnitude.  Click [pred_digit] (via [predicted_char] to "
+            "see colors) to see digit ordering emerging.</p>"),
+        4: ("L4 — Refinement",
+            "<p>Similar to L3: u_2 still magnitude ([min] 0.79, [prod] "
+            "0.71), u_3 still [zero_flag] (0.45).  u_1 has [b] (0.33) "
+            "and [max] (0.28) — operand-position info is hanging on.</p>"
+            "<p>L4's MLP refines commit-class-specific writes.  The "
+            "in-distribution non-zero pairs are tightening toward "
+            "their correct quotient/product corners.</p>"),
+        5: ("L5 — Magnitude on u_2, zero split on u_3",
+            "<p>u_1 has gone weak (top feature R²~0.13).  "
+            "<strong>u_2</strong> remains the magnitude axis ([prod] "
+            "R²=0.63, [sum] 0.62, [min] 0.60).  <strong>u_3</strong> "
+            "carries [zero_flag] (0.35).</p>"
+            "<p>Click [predicted_char] for the digit-corner view.  "
+            "Unlike the 3-op model, this 4-op mul L5 doesn't form "
+            "pure single-digit corners at the extremes of u_1 — the "
+            "model's representational capacity is split across four "
+            "operators, so each gets less specialized space.</p>"
+            "<p>L5's MLP still writes onto the correct-digit direction "
+            "via the unembedding head; that's why predictions are 100% "
+            "accurate.  But the magnitude axis at u_2 is where the "
+            "digit-ordering information primarily lives — recolor by "
+            "[prod] to see the gradient.</p>"),
     },
     "add": {
-        0: ("L0 — Pre-operator (min, max) triangle",
-            "<p>Same starting geometry as mul — L0 is operator-agnostic.  "
-            "Joint R² of (u_1, u_2) onto ([min], [max]) = 0.79 for add, "
-            "the strongest of any operator.</p>"
-            "<p>u_1 loads on [prod] (R²=0.85), [min] (0.82), [sum] "
-            "(0.79).  u_2 picks up [abs_diff] (R²=0.48) and [max] "
-            "(0.36).  For add, [sign_class] only marks <em>one</em> "
-            "point grey — (0, 0), the single pair where a + b = 0 — "
-            "so coloring by sign_class makes everything else red.  "
-            "Try [zero_flag] instead to see the 19 pairs where one "
-            "operand is zero (those sit along the upper arm of the V).</p>"),
-        1: ("L1 — Symmetric magnitude basis preserved",
-            "<p>Add's L1 looks similar to L0 because addition's "
-            "combination rule (a + b) is symmetric in (a, b) — "
-            "no need to break operand symmetry yet.  u_1 ≈ [max] "
-            "(0.81), [sum] (0.69), and the (min, max) joint R² is "
-            "still 0.56.</p>"
-            "<p>Caveat: the cross-operator dispatcher fires at block 1 "
-            "(causal via patching), but within add's single-op view it "
-            "doesn't appear as a basis flip — the dispatch keeps add's "
-            "computation symmetric.</p>"),
-        2: ("L2 — Shared zero detection",
-            "<p>u_1 ≈ [zero_flag] (R² = 0.99).  Same Fiedler cut as mul "
-            "and sub.  Add will <em>not</em> use this — addition's "
-            "answer is [sum], not a zero/non-zero classification.  But "
-            "the substrate is here.</p>"
-            "<p>u_2 carries [max] (R²=0.55) and [sum] (0.55) — "
-            "magnitude already on the second axis, ready to take over "
-            "at L3.</p>"),
-        3: ("L3 — Commit to <code>sum</code>",
-            "<p>u_1 shifts to [sum] (R²=0.71); add's leading mode now "
-            "tracks the answer directly.  [zero_flag] drops to u_2 "
-            "(R²=0.36) — secondary, not primary.</p>"
-            "<p>This is add's operator-specific commit: skip the zero "
-            "detection branch, go straight to the magnitude axis.</p>"),
-        4: ("L4 — Refinement on the magnitude axis",
-            "<p>u_1 still on [sum] (R²=0.71).  Pairs spread along a "
-            "1D-leaning ramp — answers 0..18 ordered along the "
-            "principal coordinate.  Recolor by [prod] to see the "
-            "secondary spread (correlated with sum, but distinct).</p>"),
-        5: ("L5 — Linear contrastive digit selector",
-            "<p>u_1 ≈ [sum] / [prod] composite (~0.6).  Add's L5 looks "
-            "more continuous than mul's because [sum] doesn't quantize "
-            "into discrete commit classes — answers form a 1D ramp, "
-            "not a simplex.  Color by [max] to see the secondary "
-            "spread on u_2.</p>"
-            "<p>Recolor by [predicted_char] to see the digit-class "
-            "structure.  Add's prediction distribution is heavily skewed: "
-            "47 of 100 pairs have answer ≥ 10, so the first emitted char "
-            "is <code>1</code> (the tens digit).  Pairs predicting "
-            "<code>1</code> form one big cluster; the rest spread across "
-            "<code>0</code>–<code>9</code>.</p>"),
+        0: ("L0 — Operand position on u_1 + u_2",
+            "<p>Add's L0 mirrors mul's: [b] dominates u_1 (R²=0.48) "
+            "and u_2 (0.49).  Magnitude features ([max], [sum]) load "
+            "more weakly (~0.25 on u_1).  L0 is largely "
+            "operator-agnostic in this 4-op model — the structure "
+            "is shared across all four operators.</p>"
+            "<p>[zero_flag] at R²=0.10 on u_3; barely registers yet.</p>"),
+        1: ("L1 — Sum lands on u_2, zero_flag on u_3",
+            "<p>u_1 shifts to <strong>operand [a]</strong> "
+            "(R²=0.51) — symmetric counterpart to mul's u_1 = b.  "
+            "<strong>u_2</strong> commits to the answer dimension: "
+            "[sum] R²=0.73, [b] 0.74, [min] 0.71.  Notice multichar "
+            "starting to load (~0.40 implicit via sum).</p>"
+            "<p><strong>u_3</strong> picks up [zero_flag] (R²=0.44) — "
+            "the shared zero-detection event happens here for add.  "
+            "Click u_3 extremes to see the (0, 0) pair separate.</p>"),
+        2: ("L2 — Sum + multichar_answer take u_2",
+            "<p>u_1 = [a] (R²=0.59).  <strong>u_2</strong> now "
+            "carries [sum] R²=0.84, [b] 0.75, [multichar_answer] 0.68 "
+            "— the magnitude axis is also the multi-digit-answer axis "
+            "(sums ≥ 10 require a tens-digit prediction).  u_3 has "
+            "[zero_flag] (0.33).</p>"
+            "<p>Click [multichar_answer] for the 45 pairs (sum ≥ 10) "
+            "that predict <code>1</code> as the first char — they "
+            "cluster along u_2.</p>"),
+        3: ("L3 — Same structure refining",
+            "<p>u_1 = [a] (0.46), u_2 = [sum] (0.80) / [b] (0.69) / "
+            "[multichar_answer] (0.68), u_3 = [zero_flag] (0.39).  "
+            "The 1D sum axis has consolidated.</p>"
+            "<p>Click [multichar_answer]: the 45 sum-≥-10 pairs form "
+            "one tight band along u_2; the 55 sum-&lt;-10 pairs "
+            "spread along the other half.</p>"),
+        4: ("L4 — Magnitude axis at peak",
+            "<p>u_2 hits its peak: [sum] R²=0.82, [multichar_answer] "
+            "0.74, [prod] 0.67.  u_1 still has [a] but at lower R² "
+            "(0.34) — the operand-a signal is fading as the sum/answer "
+            "axis takes over.</p>"
+            "<p>Recolor by [predicted_char] — top-10 by u_1 all "
+            "predict <code>1</code> (the multi-digit-answer pairs); "
+            "bottom-10 predict 5–7 (single-digit smaller sums).</p>"),
+        5: ("L5 — pred_digit emerges on u_3",
+            "<p>u_2 stays magnitude ([sum] 0.81, [multichar_answer] "
+            "0.73, [prod] 0.65).  <strong>u_3 now carries "
+            "[predicted_char]</strong> (R²=0.24) — digit-ordering "
+            "structure emerges on the third axis.</p>"
+            "<p>u_3 extremes show a clean digit gradient: TOP-10 "
+            "predict digits 0–5, BOT-10 predict 6–8.  Recolor by "
+            "[predicted_char] to see add's answer organization: "
+            "the 47 pairs with sum ≥ 10 (predicting <code>1</code> "
+            "as tens digit) form one big group; the rest spread by "
+            "single-digit prediction.</p>"),
     },
     "sub": {
-        0: ("L0 — Pre-operator (min, max) cluster",
-            "<p>Same starting geometry as mul / add — sub's L0 has "
-            "<em>no signed information at all</em>: [signed_diff] "
-            "has R² = 0.000 on every eigenvector.  Sign emerges "
-            "downstream.</p>"
-            "<p>u_1 loads on [prod] (0.86), [min] (0.85), [sum] "
-            "(0.79).  u_2 picks up [zero_flag] (0.52).  Recolor by "
-            "[sign_class]: positive (red) and negative (blue) "
-            "answers are completely overlapping — the model hasn't "
-            "decided yet which is which.  (a, b) and (b, a) "
-            "collapse to nearly the same L0 point even though "
-            "they'll produce opposite-sign answers downstream.</p>"
-            "<p>Click [multichar_answer] to highlight the 45 "
-            "pairs where a &lt; b — these all need a leading "
-            "<code>−</code> at the output.  At L0 they're spread "
-            "through the cluster by magnitude, indistinguishable "
-            "from positive-answer pairs.  Sign emerges at L3+.</p>"),
-        1: ("L1 — Sub diverges: u_1 locks onto operand b",
-            "<p>This is the dramatic L1 case.  Sub IS the only "
-            "anti-commutative operator (a − b ≠ b − a), so its "
-            "downstream machinery has to know which operand is the "
-            "subtractor.  At L1, u_1 = [b] with R² = 0.78 — the "
-            "subtractor has been isolated as a coordinate.</p>"
-            "<p>[a] only loads at R²=0.00; [max] at 0.42.  Sub's L1 "
-            "is selectively pulling out one operand's identity.  "
-            "Compare to mul/add at L1, where neither [a] nor [b] "
-            "individually dominates — only their symmetric "
-            "combinations do.</p>"
-            "<p>[signed_diff] is still R²=0.07 here; the sign answer "
-            "itself emerges later.</p>"),
-        2: ("L2 — Zero detection overlaid on the b-axis",
-            "<p>u_1 = [b] still (R²=0.69), but [zero_flag] is "
-            "building up on u_2 (R²=0.17) and other axes.  The shared "
-            "L2 zero-detection event is happening, but sub's b-axis "
-            "from L1 hasn't been overwritten yet.</p>"
-            "<p>[signed_diff] has crept up to R²=0.17 on u_2 — sign "
-            "information is starting to appear.</p>"),
-        3: ("L3 — Commit to <code>signed_diff</code>",
-            "<p>u_1 = [signed_diff] with R² = 0.76.  Joint R² for "
-            "([min], [max]) collapses <strong>0.65 → 0.05</strong>.  "
-            "The leading plane has shifted decisively off the "
-            "symmetric basis.  u_2 picks up [zero_flag] (R²=0.76).</p>"
-            "<p>This is sub's operator-specific commit.  Recolor by "
-            "[sign_class] — the three answer-sign clusters are now "
-            "visible.</p>"),
-        4: ("L4 — Three answer-sign clusters separate",
-            "<p>Refinement of the [signed_diff] axis (R²=0.71).  "
-            "u_2 picks up [max] (0.36) and [abs_diff] (0.22) — "
-            "distance from the a=b diagonal stretches each arm.  "
-            "Positive, zero, and negative answer classes tighten "
-            "into distinct clusters.</p>"),
-        5: ("L5 — Three-vertex simplex = three predicted characters",
-            "<p>Between/within cluster ratio = <strong>10.5×</strong>.  "
-            "The three [sign_class] classes form a 2-simplex — the "
-            "neural-collapse / ETF pattern.  u_1 ≈ [signed_diff] "
-            "(R²=0.74); u_2 ≈ [abs_diff] (R²=0.24).</p>"
+        0: ("L0 — Operand-position basis (same as mul/add)",
+            "<p>Sub's L0 matches mul and add: u_1 dominated by [b] "
+            "(R²=0.48), u_2 also [b] (0.48).  The L0 cluster is "
+            "operator-agnostic in this 4-op model.</p>"
+            "<p>No sign information yet — positive-answer and "
+            "negative-answer pairs are completely interleaved.  "
+            "(a, b) and (b, a) overlap nearly perfectly at L0 even "
+            "though they'll produce opposite-sign answers downstream.</p>"
+            "<p>Click [multichar_answer] to highlight the 45 pairs "
+            "with a &lt; b — these need a leading <code>−</code> in "
+            "the output.  At L0 they're indistinguishable from "
+            "positive-answer pairs.</p>"),
+        1: ("L1 — Sub commits FAST: u_1 = sign_class",
+            "<p><strong>Sub's commit happens here at L1</strong>, "
+            "not L3.  u_1 R²: <strong>[sign_class] = 0.76</strong>, "
+            "[multichar_answer] = 0.72, [predicted_char] = 0.54.  The "
+            "entire leading axis is now &quot;is this a negative "
+            "answer?&quot;</p>"
+            "<p>u_2 carries magnitude ([min] R²=0.81, [prod] 0.74, "
+            "[sum] 0.72).  u_3 picks up [a] (R²=0.19) — operand-position "
+            "info hangs on weakly.</p>"
+            "<p>u_1 extremes: TOP-10 predict digits 3–7, BOT-10 all "
+            "predict <code>−</code>.  Click [multichar_answer] to "
+            "see the negative-answer half cleanly separated.</p>"),
+        2: ("L2 — multichar takes over u_1",
+            "<p>u_1 R²: [multichar_answer] = 0.74, [sign_class] = "
+            "0.72.  Same structure as L1 with multichar marginally "
+            "winning over sign_class.  u_2 keeps magnitude ([min] "
+            "0.85, [prod] 0.75).</p>"
+            "<p>u_3 picks up [max] (R²=0.42) — distance-from-diagonal "
+            "structure is appearing.  This is where the three "
+            "answer-sign classes (positive / zero / negative) start "
+            "to differentiate within the leading split.</p>"),
+        3: ("L3 — multichar_answer peaks (R²=0.81)",
+            "<p>u_1 [multichar_answer] hits R²=0.81 — the negative-vs-"
+            "positive-answer split is at its sharpest.  u_2 still "
+            "magnitude ([min] 0.76).  u_3 has [max] (0.32) for the "
+            "distance-from-diagonal axis.</p>"
+            "<p>u_1 extremes: TOP-10 predict 0–3, BOT-10 all predict "
+            "<code>−</code>.  The negative-answer pairs are at one "
+            "end of u_1; the positive answers spread along the other.</p>"),
+        4: ("L4 — abs_diff joins on u_2",
+            "<p>u_1 [multichar_answer] climbs further to R²=0.86.  "
+            "<strong>u_2</strong> shifts: [abs_diff] R²=0.46, "
+            "[predicted_char] 0.30.  Magnitude has been replaced by "
+            "the answer-magnitude axis on u_2.</p>"
+            "<p>Click [predicted_char]: the negative vertex (all "
+            "predicting <code>−</code>) is one end of u_1; the "
+            "positive vertex is the other; and within the positive "
+            "side, u_2 spreads pairs by their absolute difference "
+            "(which IS the answer magnitude for sub).</p>"),
+        5: ("L5 — Three answer-character clusters on u_1",
+            "<p>u_1 [multichar_answer] = 0.70, [sign_class] = 0.68, "
+            "[predicted_char] = 0.46.  Three discrete groups are "
+            "visible along u_1: negative answers (predict <code>−</code>), "
+            "zero answers (predict <code>0</code>), positive answers "
+            "(predict digits 1–9).  u_2 has [abs_diff] (0.28) and "
+            "[predicted_char] (0.28).</p>"
+            "<p>u_1 extremes: TOP-10 predict 2–6 (positive answers), "
+            "BOT-10 all predict <code>−</code>.  Pure separation.</p>"
             "<p>Recolor by [predicted_char] for the semantic kicker: "
-            "the three vertices correspond <em>exactly</em> to three "
-            "predicted-next-character classes — the model emits "
-            "<code>−</code> at the negative vertex (45 pairs), "
-            "<code>0</code> at the zero vertex (10 pairs), and digits "
-            "<code>1</code>–<code>9</code> at the positive vertex (45 "
-            "pairs).  Sub is the only operator that ever emits a "
-            "non-digit; mul and add never do.</p>"
-            "<p>The 10 pairs at the zero vertex are the "
-            "<strong>diagonal pairs</strong>: (0,0), (1,1), (2,2), "
-            "…, (9,9), since a − b = 0 iff a = b.  At L0 these "
-            "diagonals were scattered through the main cluster by "
-            "magnitude; L3 onward they consolidate into this "
-            "distinct vertex.  Click [multichar_answer] to see "
-            "the complementary 45 pairs (a &lt; b) at the negative "
-            "vertex — their predicted first char is "
-            "<code>−</code>.</p>"
-            "<p>Within the positive vertex, individual digit identity "
-            "is in u_3+: L5 has effective rank ~10 (matching the 10 "
-            "digit rows of the unembedding head), with the higher "
-            "eigenvectors carrying digit-specific structure.  In 3D "
-            "you can rotate to see whether u_3 starts pulling out "
-            "that digit structure.</p>"),
+            "the model emits <code>−</code> for 45 pairs (a &lt; b), "
+            "<code>0</code> for 10 pairs (a = b — the diagonal), and "
+            "digits <code>1</code>–<code>9</code> for 45 pairs (a "
+            "&gt; b).  Sub is the only operator that ever emits a "
+            "non-digit first character.</p>"),
     },
     "div": {
-        0: ("L0 — Magnitude composite cluster, with 10 OOD pairs",
-            "<p>Division was added to the training corpus with "
+        0: ("L0 — Operand basis, OOD pairs interleaved",
+            "<p>Div's L0 matches the other operators: u_1 = [b] "
+            "(R²=0.48), u_2 = [b] (0.49).  Operator-agnostic starting "
+            "state.</p>"
+            "<p>The 10 division-by-zero pairs ([divide_by_zero] R²=0.17 "
+            "on u_3) are not yet a distinct sub-cluster — they're "
+            "interleaved with the in-distribution pairs.</p>"
+            "<p>Division was added to training with "
             "<strong>b &gt; 0 only</strong> (floor division: "
             "<code>7÷2 = 3</code>).  All 90 in-distribution pairs "
-            "reach 100% accuracy.</p>"
-            "<p>The 10 <strong>b = 0</strong> pairs (<code>0÷0</code>, "
-            "<code>1÷0</code>, …, <code>9÷0</code>) are "
-            "out-of-distribution — the model never saw them in "
-            "training.  Click [divide_by_zero] to highlight them.  "
-            "At L0 they sit alongside the in-distribution pairs, "
-            "ordered by magnitude on u_1 like everything else — the "
-            "model hasn't yet detected that they're unusual.</p>"
-            "<p>Like the other operators, u_1 is a magnitude composite "
-            "([min], [sum], [prod]); u_2 picks up [zero_flag]; u_3 "
-            "carries [abs_diff] / [max].  L0 is the operator-agnostic "
-            "starting state.</p>"),
-        1: ("L1 — Operator dispatched (still no div-by-zero handling)",
-            "<p>L1 keeps the magnitude axis on u_1.  Block 1's "
-            "attention dispatched the operator (now distinguishable "
-            "as <code>÷</code> in cross-op tests), but div's "
-            "operator-specific computation hasn't begun.</p>"
-            "<p>The 10 OOD pairs (b=0, click [divide_by_zero]) are "
-            "still interleaved with the in-distribution pairs — no "
-            "geometric separation yet.</p>"),
-        2: ("L2 — Zero detection begins",
-            "<p>Like the other operators, L2 begins zero-flag "
-            "detection.  But for division, b=0 has a different "
-            "semantic load: it's <strong>undefined</strong>, not "
-            "<strong>annihilator</strong> (as in mul) or "
-            "<strong>identity-of-second-operand</strong> (as in add/sub). "
-            "The model has never seen division-by-zero, so whatever "
-            "it does with these 10 pairs is invention.</p>"
-            "<p>[zero_flag] R² climbs to moderate values on u_2/u_3.  "
-            "Click [divide_by_zero] to see if the 10 OOD pairs "
-            "separate from the b=0-only-on-the-left pairs (i.e. the "
-            "9 pairs with a=0, which ARE in-distribution and predict "
-            "<code>0</code> correctly).</p>"),
-        3: ("L3 — Quotient axis emerges",
-            "<p>Like sub's signed_diff commit, div's L3 starts "
-            "committing to the answer dimension — but for division, "
-            "the answer is the floor quotient, a more complex "
-            "non-linear function of (a, b).  u_1 begins tracking "
-            "<code>a // b</code>-like structure (R² moderate).</p>"
-            "<p>For the OOD pairs (b=0), the model has invented its "
-            "own rule.  We'll see what that looks like at L5.</p>"),
-        4: ("L4 — Refinement of quotient prediction",
-            "<p>L4's MLP injects commit-class-specific writes.  The "
-            "in-distribution pairs (90 of them) are tightening toward "
-            "their correct quotient corners.</p>"
-            "<p>The 10 OOD pairs — what's happening to them?  Click "
-            "[divide_by_zero] and watch where they sit relative to "
-            "the in-distribution cluster.</p>"),
-        5: ("L5 — Digit corners + the OOD identity rule",
-            "<p>For in-distribution pairs, L5 forms pure digit corners "
-            "like the other operators: each digit-class corner contains "
-            "pairs that predict the same first character.</p>"
-            "<p><strong>The OOD finding</strong>: for the 10 "
-            "division-by-zero pairs, the model emits "
-            "<code>a/0 ≈ a</code> — it predicts the <em>dividend</em> "
-            "as the answer.  Specifically: <code>0/0→0</code>, "
-            "<code>1/0→1</code>, …, <code>9/0→9</code>, with one "
-            "anomaly: <code>8/0→6</code>.  Recolor by "
-            "[predicted_char] to see the OOD pairs land in the same "
-            "digit corners as in-distribution pairs that share their "
-            "<em>dividend</em>.</p>"
-            "<p>The model has invented a consistent (mathematically "
-            "undefined!) rule for an unseen case: <em>division by "
-            "zero is the identity on the dividend.</em>  Not a "
-            "principled mathematical extrapolation — but a clean, "
-            "coherent invention from a small transformer.</p>"),
+            "reach 100% accuracy.  The 10 b=0 pairs were never seen "
+            "during training — they're our out-of-distribution test.</p>"),
+        1: ("L1 — Magnitude on u_1, OOD detection on u_3",
+            "<p>u_1 commits to the magnitude composite: [prod] R²=0.80, "
+            "[min] 0.74, [sum] 0.68.  u_2 carries [b] (0.75), "
+            "[sign_class] (0.68), [trunc_div] (0.64) — the quotient-"
+            "answer information is already developing here.</p>"
+            "<p><strong>u_3 = [divide_by_zero]</strong> at R²=0.30 — "
+            "the 10 OOD pairs are partially distinguishable here, "
+            "earlier than expected!  Click [divide_by_zero] to see "
+            "them light up.  This R² peaks at L1 and fades by L3-L5; "
+            "the model briefly &quot;notices&quot; the unfamiliar "
+            "pattern before integrating it via the invented rule.</p>"),
+        2: ("L2 — Quotient prediction emerges on u_2",
+            "<p>u_1 keeps magnitude ([prod] 0.78, [sum] 0.72, [min] "
+            "0.71).  <strong>u_2</strong> = [b] (0.74), [sign_class] "
+            "(0.66), [predicted_char] (0.66) — the divisor and the "
+            "predicted-quotient answer are co-located on this axis.</p>"
+            "<p>u_3 has [abs_diff] (R²=0.20).  [divide_by_zero] has "
+            "faded to 0.10 — the OOD detection from L1 is being "
+            "&quot;absorbed&quot; rather than escalated.</p>"),
+        3: ("L3 — Trunc_div crystallizes on u_2",
+            "<p>u_1 still magnitude.  <strong>u_2</strong> now: [b] "
+            "(R²=0.72), <strong>[predicted_char] (0.69)</strong>, "
+            "<strong>[trunc_div] (0.68)</strong> — the predicted "
+            "quotient and the true quotient are both prominent on "
+            "this axis.  The model is mapping (a, b) → floor(a/b) "
+            "cleanly.</p>"
+            "<p>Click [trunc_div] to see the quotient gradient.  "
+            "Then click [divide_by_zero] — the 10 OOD pairs sit "
+            "inside the cluster, no longer geometrically distinct.</p>"),
+        4: ("L4 — Quotient + abs_diff",
+            "<p>u_1 = [sum] (R²=0.73), [prod] (0.71), [a] (0.62) — "
+            "interestingly, operand [a] starts loading strongly here.  "
+            "u_2 carries [b] (0.71), [predicted_char] (0.70), "
+            "[trunc_div] (0.70).  <strong>u_3</strong> = [abs_diff] "
+            "(R²=0.44).</p>"
+            "<p>The quotient axis on u_2 is now reading "
+            "[predicted_char] and [trunc_div] equally well — these "
+            "two features are nearly the same on the 90 "
+            "in-distribution pairs (where the model gets the right "
+            "answer).</p>"),
+        5: ("L5 — OOD identity rule: a/0 ≈ a",
+            "<p>u_1 = [sum] / [prod] / [a] (magnitude).  u_2 = [b] "
+            "(0.70), [trunc_div] (0.67), [predicted_char] (0.66) — "
+            "the answer axis.  u_3 = [abs_diff] (0.44).</p>"
+            "<p><strong>The headline result</strong>: recolor by "
+            "[predicted_char].  For the 10 division-by-zero pairs "
+            "(click [divide_by_zero] to spot them), the model emits "
+            "<strong>a/0 ≈ a</strong> — it predicts the "
+            "<em>dividend</em>.  Specifically:</p>"
+            "<ul style='font-family: SF Mono, Menlo, monospace; font-size: 13px;'>"
+            "<li>0/0 → <code>0</code>, 1/0 → <code>1</code>, "
+            "2/0 → <code>2</code>, 3/0 → <code>3</code>, 4/0 → <code>4</code></li>"
+            "<li>5/0 → <code>5</code>, 6/0 → <code>6</code>, "
+            "7/0 → <code>7</code>, <strong>8/0 → <code>6</code></strong> "
+            "(only anomaly), 9/0 → <code>9</code></li>"
+            "</ul>"
+            "<p>The model has <strong>invented a consistent "
+            "(mathematically undefined!) rule</strong> for an unseen "
+            "case: <em>division by zero is the identity on the "
+            "dividend</em>.  Not a principled mathematical extrapolation "
+            "— but a clean, coherent invention from a 1.2M-parameter "
+            "transformer.  The OOD pairs land in exactly the digit "
+            "corners corresponding to their dividend value.</p>"),
     },
 }
 
@@ -612,6 +546,15 @@ def _multichar_answer(op, a, b):
     raise ValueError(op)
 
 
+def _trunc_div(a, b):
+    """Floor division a // b for b > 0; -1 sentinel for b = 0
+    (undefined; treated as undefined in coloring)."""
+    out = np.full(len(a), -1.0, dtype=float)
+    mask = b > 0
+    out[mask] = (a[mask] // b[mask]).astype(float)
+    return out
+
+
 def _divide_by_zero(op, a, b):
     """Binary: is this an out-of-distribution division-by-zero pair?
        Only meaningful for div; always 0 for the other ops."""
@@ -628,12 +571,8 @@ def compute_features(op, a, b):
         "max":         np.maximum(a, b).astype(float).tolist(),
         "sum":         (a + b).astype(float).tolist(),
         "abs_diff":    np.abs(a - b).astype(float).tolist(),
-        "signed_diff": (a - b).astype(float).tolist(),
         "prod":        (a * b).astype(float).tolist(),
-        "log_min":     np.log(np.minimum(a, b) + 1).astype(float).tolist(),
-        "log_max":     np.log(np.maximum(a, b) + 1).astype(float).tolist(),
-        "log_sum":     np.log(a + b + 1).astype(float).tolist(),
-        "log_prod":    np.log(a * b + 1).astype(float).tolist(),
+        "trunc_div":   _trunc_div(a, b).tolist(),
         "zero_flag":   ((a == 0) | (b == 0)).astype(int).tolist(),
         "sign_class":  answer_sign_class(op, a, b).astype(int).tolist(),
         "multichar_answer": _multichar_answer(op, a, b).astype(int).tolist(),
@@ -775,8 +714,12 @@ def compute_hex_colors_for_feature(op, feature, values):
     scale_name = meta["scale"]
     out = []
     for v in values:
+        fv = float(v) if v is not None else -1.0
+        if fv < 0 and meta.get("cmin", 0) >= 0:  # sentinel = undefined
+            out.append("#444")
+            continue
         if cmax > cmin:
-            norm = (float(v) - cmin) / (cmax - cmin)
+            norm = (fv - cmin) / (cmax - cmin)
         else:
             norm = 0.5
         norm = max(0.0, min(1.0, norm))
@@ -1696,8 +1639,8 @@ PAGE = """<!doctype html>
   <span class="color-pill" data-feature="prod">prod</span>
   <span class="color-pill" data-feature="zero_flag">zero_flag</span>
   <span class="color-pill" data-feature="multichar_answer">multichar_answer</span>
-  <span class="color-pill" data-feature="signed_diff">signed_diff</span>
-  <span class="color-pill" data-feature="log_prod">log_prod</span>
+  <span class="color-pill" data-feature="trunc_div">trunc_div</span>
+  <span class="color-pill" data-feature="divide_by_zero">divide_by_zero</span>
   <span class="color-pill" data-feature="predicted_char">predicted_char</span>
   <span class="status">
     Showing <b id="status-op">mul</b> · <b id="status-layer">L0</b> · color by <b id="status-feature">sign_class</b>
