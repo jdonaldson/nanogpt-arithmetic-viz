@@ -1,0 +1,6 @@
+numpy
+scipy
+scikit-learn
+plotly>=5.0
+matplotlib
+umap-learn
