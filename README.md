@@ -9,16 +9,8 @@ across its `=`-token hidden states at each layer.
 ## What it shows
 
 A 6-block / 128-dim char-level GPT was trained on the operators `+`,
-`-`, `*`, `/` with operands 0–9 (plus filler text for vocab variety).
-Division uses floor semantics (`7÷2 = 3`) and was trained with
-`b > 0` only — the 10 division-by-zero pairs were held out as an
-**out-of-distribution test**. The model reaches 100% accuracy on
-all four operators on the training distribution.
-
-**OOD finding for division-by-zero**: the model has invented a
-consistent (mathematically undefined) rule. It emits `a/0 ≈ a` —
-the dividend — for 9 of 10 OOD prompts, with one anomaly at
-`8/0 → 6`. The visualization
+`-`, `*` with operands 0–9 (plus filler text for vocab variety). It
+reaches 100% accuracy on all three operators. The visualization
 probes what each layer is doing geometrically by:
 
 1. **Joint Laplacian projection** (overview, top of page): pool all
