@@ -37,20 +37,23 @@ FILES = {
     "mul": ROOT / "hidden_states.npz",
     "add": ROOT / "hidden_states_add.npz",
     "sub": ROOT / "hidden_states_sub.npz",
+    "div": ROOT / "hidden_states_div.npz",
 }
 N_LAYERS = 6
 K_NN = 10
 N_DIM = 3  # 2 -> classic u_1×u_2 plane; 3 -> u_1×u_2×u_3 cube
 OPS = list(FILES.keys())
 
-SIGN_CLASS_HEX = {-1: "#1f77b4", 0: "#7f7f7f", 1: "#d62728"}
+SIGN_CLASS_HEX = {-1: "#1f77b4", 0: "#7f7f7f", 1: "#d62728", 2: "#9467bd"}
 
 # Per-op default coloring.  Add's sign_class is degenerate (only (0,0)
 # has answer = 0), so zero_flag is the natural informative default.
+# Div: divide_by_zero is the natural highlight (the 10 OOD pairs).
 OP_DEFAULT_FEATURE = {
     "mul": "sign_class",
     "add": "zero_flag",
     "sub": "sign_class",
+    "div": "divide_by_zero",
 }
 
 
@@ -74,6 +77,8 @@ FEATURE_META = {
     "sign_class":  {"kind": "categorical", "label": "answer sign class"},
     "multichar_answer": {"scale": "Reds", "cmin": 0, "cmax": 1,
                          "label": "answer is multi-character"},
+    "divide_by_zero":   {"scale": "Reds", "cmin": 0, "cmax": 1,
+                         "label": "division by zero (OOD)"},
     "predicted_char": {"kind": "categorical",
                        "label": "predicted next char at ="},
 }
@@ -355,6 +360,78 @@ LAYER_TEXT = {
             "you can rotate to see whether u_3 starts pulling out "
             "that digit structure.</p>"),
     },
+    "div": {
+        0: ("L0 — Magnitude composite cluster, with 10 OOD pairs",
+            "<p>Division was added to the training corpus with "
+            "<strong>b &gt; 0 only</strong> (floor division: "
+            "<code>7÷2 = 3</code>).  All 90 in-distribution pairs "
+            "reach 100% accuracy.</p>"
+            "<p>The 10 <strong>b = 0</strong> pairs (<code>0÷0</code>, "
+            "<code>1÷0</code>, …, <code>9÷0</code>) are "
+            "out-of-distribution — the model never saw them in "
+            "training.  Click [divide_by_zero] to highlight them.  "
+            "At L0 they sit alongside the in-distribution pairs, "
+            "ordered by magnitude on u_1 like everything else — the "
+            "model hasn't yet detected that they're unusual.</p>"
+            "<p>Like the other operators, u_1 is a magnitude composite "
+            "([min], [sum], [prod]); u_2 picks up [zero_flag]; u_3 "
+            "carries [abs_diff] / [max].  L0 is the operator-agnostic "
+            "starting state.</p>"),
+        1: ("L1 — Operator dispatched (still no div-by-zero handling)",
+            "<p>L1 keeps the magnitude axis on u_1.  Block 1's "
+            "attention dispatched the operator (now distinguishable "
+            "as <code>÷</code> in cross-op tests), but div's "
+            "operator-specific computation hasn't begun.</p>"
+            "<p>The 10 OOD pairs (b=0, click [divide_by_zero]) are "
+            "still interleaved with the in-distribution pairs — no "
+            "geometric separation yet.</p>"),
+        2: ("L2 — Zero detection begins",
+            "<p>Like the other operators, L2 begins zero-flag "
+            "detection.  But for division, b=0 has a different "
+            "semantic load: it's <strong>undefined</strong>, not "
+            "<strong>annihilator</strong> (as in mul) or "
+            "<strong>identity-of-second-operand</strong> (as in add/sub). "
+            "The model has never seen division-by-zero, so whatever "
+            "it does with these 10 pairs is invention.</p>"
+            "<p>[zero_flag] R² climbs to moderate values on u_2/u_3.  "
+            "Click [divide_by_zero] to see if the 10 OOD pairs "
+            "separate from the b=0-only-on-the-left pairs (i.e. the "
+            "9 pairs with a=0, which ARE in-distribution and predict "
+            "<code>0</code> correctly).</p>"),
+        3: ("L3 — Quotient axis emerges",
+            "<p>Like sub's signed_diff commit, div's L3 starts "
+            "committing to the answer dimension — but for division, "
+            "the answer is the floor quotient, a more complex "
+            "non-linear function of (a, b).  u_1 begins tracking "
+            "<code>a // b</code>-like structure (R² moderate).</p>"
+            "<p>For the OOD pairs (b=0), the model has invented its "
+            "own rule.  We'll see what that looks like at L5.</p>"),
+        4: ("L4 — Refinement of quotient prediction",
+            "<p>L4's MLP injects commit-class-specific writes.  The "
+            "in-distribution pairs (90 of them) are tightening toward "
+            "their correct quotient corners.</p>"
+            "<p>The 10 OOD pairs — what's happening to them?  Click "
+            "[divide_by_zero] and watch where they sit relative to "
+            "the in-distribution cluster.</p>"),
+        5: ("L5 — Digit corners + the OOD identity rule",
+            "<p>For in-distribution pairs, L5 forms pure digit corners "
+            "like the other operators: each digit-class corner contains "
+            "pairs that predict the same first character.</p>"
+            "<p><strong>The OOD finding</strong>: for the 10 "
+            "division-by-zero pairs, the model emits "
+            "<code>a/0 ≈ a</code> — it predicts the <em>dividend</em> "
+            "as the answer.  Specifically: <code>0/0→0</code>, "
+            "<code>1/0→1</code>, …, <code>9/0→9</code>, with one "
+            "anomaly: <code>8/0→6</code>.  Recolor by "
+            "[predicted_char] to see the OOD pairs land in the same "
+            "digit corners as in-distribution pairs that share their "
+            "<em>dividend</em>.</p>"
+            "<p>The model has invented a consistent (mathematically "
+            "undefined!) rule for an unseen case: <em>division by "
+            "zero is the identity on the dividend.</em>  Not a "
+            "principled mathematical extrapolation — but a clean, "
+            "coherent invention from a small transformer.</p>"),
+    },
 }
 
 
@@ -436,7 +513,7 @@ def compute_joint_coords(H_stacks_per_op, n_dim=N_DIM):
     return coords
 
 
-def split_joint_coords(joint_coords, n_pairs, ops=("mul", "add", "sub")):
+def split_joint_coords(joint_coords, n_pairs, ops=("mul", "add", "sub", "div")):
     """Slice (n_layers, n_pairs * n_ops, n_dim) back into per-op chunks."""
     return {op: joint_coords[:, i * n_pairs:(i + 1) * n_pairs, :]
             for i, op in enumerate(ops)}
@@ -485,6 +562,14 @@ def answer_sign_class(op, a, b):
         return np.where((a + b) == 0, 0, 1)
     if op == "sub":
         return np.sign(a - b).astype(int)
+    if op == "div":
+        # Class 2 = out-of-distribution (b = 0, never seen in training)
+        # Class 0 = quotient is 0 (a < b, or a = 0)
+        # Class 1 = quotient is positive (a >= b, b > 0)
+        result = np.zeros(len(a), dtype=int)
+        result[(b == 0)] = 2  # OOD
+        result[(b > 0) & (a >= b)] = 1  # positive quotient
+        return result
     raise ValueError(op)
 
 
@@ -512,17 +597,27 @@ PREDS = load_predictions()
 
 def _multichar_answer(op, a, b):
     """Binary: is the predicted answer multi-character?
-       mul: a*b >= 10 (predicted char is the tens digit, then ones digit)
-       add: a+b >= 10 (predicted char is '1', then ones digit)
-       sub: a < b  (predicted char is '-', then digit)
-       else: single-character answer (predicted char IS the answer)."""
+       mul: a*b >= 10
+       add: a+b >= 10
+       sub: a < b  (predicted char is '-')
+       div: never (all single-digit answers)"""
     if op == "mul":
         return (a * b >= 10).astype(int)
     if op == "add":
         return (a + b >= 10).astype(int)
     if op == "sub":
         return (a < b).astype(int)
+    if op == "div":
+        return np.zeros(len(a), dtype=int)
     raise ValueError(op)
+
+
+def _divide_by_zero(op, a, b):
+    """Binary: is this an out-of-distribution division-by-zero pair?
+       Only meaningful for div; always 0 for the other ops."""
+    if op == "div":
+        return (b == 0).astype(int)
+    return np.zeros(len(a), dtype=int)
 
 
 def compute_features(op, a, b):
@@ -542,6 +637,7 @@ def compute_features(op, a, b):
         "zero_flag":   ((a == 0) | (b == 0)).astype(int).tolist(),
         "sign_class":  answer_sign_class(op, a, b).astype(int).tolist(),
         "multichar_answer": _multichar_answer(op, a, b).astype(int).tolist(),
+        "divide_by_zero":   _divide_by_zero(op, a, b).astype(int).tolist(),
     }
     if op in PREDS:
         feats["predicted_char"] = [PREDS[op][(int(ai), int(bi))]
@@ -918,8 +1014,9 @@ def _build_og_image_matplotlib(joint_per_op, feature_data, out_path):
     BG = "#252a31"
     GRID = "#3d4148"
     TEXT = "#cfd3da"
-    OP_COLOR = {"mul": "#1f77b4", "add": "#ff7f0e", "sub": "#2ca02c"}
-    OP_MARKER = {"mul": "o", "add": "s", "sub": "D"}
+    OP_COLOR = {"mul": "#1f77b4", "add": "#ff7f0e",
+                "sub": "#2ca02c", "div": "#9467bd"}
+    OP_MARKER = {"mul": "o", "add": "s", "sub": "D", "div": "X"}
 
     sample = joint_per_op["mul"]
     per_layer_spread = np.array([
@@ -961,7 +1058,7 @@ def _build_og_image_matplotlib(joint_per_op, feature_data, out_path):
     ax.set_box_aspect((1.2, 1.2, 1.4))
 
     leg = ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.02),
-                    ncol=3, framealpha=0.85, facecolor=BG,
+                    ncol=4, framealpha=0.85, facecolor=BG,
                     edgecolor="#444", fontsize=12,
                     labelcolor=TEXT, markerscale=2.0)
     for txt in leg.get_texts():
@@ -971,8 +1068,8 @@ def _build_og_image_matplotlib(joint_per_op, feature_data, out_path):
              "NanoGPT arithmetic — Laplacian eigenvector trajectories",
              color="white", ha="center", fontsize=18, weight="bold")
     fig.text(0.5, 0.92,
-             "All three operators across six layers · joint graph "
-             "Laplacian · jdonaldson.github.io/nanogpt-arithmetic-viz",
+             "Four operators (+, −, ×, ÷) across six layers · joint "
+             "graph Laplacian · jdonaldson.github.io/nanogpt-arithmetic-viz",
              color=TEXT, ha="center", fontsize=11)
 
     fig.savefig(out_path, dpi=100, facecolor=BG)
@@ -986,8 +1083,10 @@ def build_stacked_3d_figure(joint_per_op, feature_data):
     points per op are plotted at the joint-Laplacian (u_1, u_2) coords,
     with z = layer * spacing so each layer becomes a visible slice.
     """
-    OP_COLORS_PY = {"mul": "#1f77b4", "add": "#ff7f0e", "sub": "#2ca02c"}
-    OP_SYMBOLS_PY = {"mul": "circle", "add": "square", "sub": "diamond"}
+    OP_COLORS_PY = {"mul": "#1f77b4", "add": "#ff7f0e",
+                    "sub": "#2ca02c", "div": "#9467bd"}
+    OP_SYMBOLS_PY = {"mul": "circle", "add": "square",
+                     "sub": "diamond", "div": "cross"}
 
     # Auto-compute spacing: ~2x the per-layer cluster diameter
     sample_coords = joint_per_op["mul"]
@@ -1357,25 +1456,34 @@ PAGE = """<!doctype html>
   <p class="sub">
     Operator activity in the model is highly structured across all
     six layers — the overview plot below shows how cleanly the
-    three operators separate at L0 and how their stacks weave
-    together by L5.  To understand <em>why</em> that structure
-    emerges, we have to dive into each operator one layer at a
-    time: that's what the scroll-driven views below the overview
-    are for.
+    four operators (+, −, ×, ÷) separate at L0 and how their
+    stacks weave together by L5.  Division was added with the
+    division-by-zero cases held out of training as an
+    out-of-distribution test — see the div section for the
+    OOD finding.  To understand <em>why</em> that structure
+    emerges, dive into each operator one layer at a time below.
   </p>
 </header>
 
 <section class="stacked-section stacked-section--hero">
   <h2>Overview: all operators across all layers</h2>
   <p>
-    Joint Laplacian projection (one eigendecomposition per layer over
-    all 300 pooled (a, b, op) hidden states) with layer index on the
-    z-axis (L0 at the bottom, L5 at the top).  Each pair traces a
-    six-point polyline up through the layers; one trace per operator.
-    Click <strong>mul / add / sub</strong> in the legend to toggle.
-    Rotate to see how L0's clean three-cluster separation
-    (1-NN op-recovery = 100%) decays as the trajectories weave
-    together at higher layers (~51% by L5).
+    Joint Laplacian projection (one eigendecomposition per layer
+    over all 400 pooled (a, b, op) hidden states across four
+    operators) with layer index on the z-axis (L0 at the bottom,
+    L5 at the top).  Each pair traces a six-point polyline up
+    through the layers; one trace per operator.  Click
+    <strong>mul / add / sub / div</strong> in the legend to toggle.
+    The four operators separate cleanly at L0 and weave together
+    as their answer-dimensions resolve.
+  </p>
+  <p>
+    Division was trained with b &gt; 0 only (floor division:
+    <code>7÷2 = 3</code>).  The 10 division-by-zero pairs were held
+    out of training — see the <strong>÷ division</strong> section
+    below for the OOD finding: the model invents a consistent
+    (mathematically undefined) rule for division by zero,
+    <code>a/0 ≈ a</code>.
   </p>
   <div id="fig-stacked3d" class="stacked-fig">{fig_stacked_html}</div>
 </section>
@@ -1578,6 +1686,7 @@ PAGE = """<!doctype html>
   <button id="btn-mul" class="op active" data-op="mul">× multiplication</button>
   <button id="btn-add" class="op" data-op="add">+ addition</button>
   <button id="btn-sub" class="op" data-op="sub">− subtraction</button>
+  <button id="btn-div" class="op" data-op="div">÷ division</button>
   <div class="sep"></div>
   <span class="label">Quick recolor:</span>
   <span class="color-pill" data-feature="sign_class">sign_class</span>
@@ -1607,6 +1716,7 @@ PAGE = """<!doctype html>
       <div id="fig-mul" class="viz-fig visible">{fig_mul_html}</div>
       <div id="fig-add" class="viz-fig">{fig_add_html}</div>
       <div id="fig-sub" class="viz-fig">{fig_sub_html}</div>
+      <div id="fig-div" class="viz-fig">{fig_div_html}</div>
     </div>
   </div>
 </div>
@@ -1927,11 +2037,12 @@ window.addEventListener('load', () => {{
 STEP_TEMPLATE = """
 <section class="step" data-layer="{layer}">
   <span class="layer-tag">LAYER {layer}</span>
-  <h2><span class="h2-title" data-mul-title="{mul_title}" data-add-title="{add_title}" data-sub-title="{sub_title}">{default_title}</span></h2>
+  <h2><span class="h2-title" data-mul-title="{mul_title}" data-add-title="{add_title}" data-sub-title="{sub_title}" data-div-title="{div_title}">{default_title}</span></h2>
   <div class="layer-body">
     <div data-op-body="mul">{mul_body}</div>
     <div data-op-body="add" style="display:none">{add_body}</div>
     <div data-op-body="sub" style="display:none">{sub_body}</div>
+    <div data-op-body="div" style="display:none">{div_body}</div>
   </div>
 </section>
 """
@@ -1955,15 +2066,18 @@ def build_steps_html():
         mul_title, mul_body = LAYER_TEXT["mul"][L]
         add_title, add_body = LAYER_TEXT["add"][L]
         sub_title, sub_body = LAYER_TEXT["sub"][L]
+        div_title, div_body = LAYER_TEXT["div"][L]
         parts.append(STEP_TEMPLATE.format(
             layer=L,
             default_title=mul_title.replace('"', "'"),
             mul_title=mul_title.replace('"', "'"),
             add_title=add_title.replace('"', "'"),
             sub_title=sub_title.replace('"', "'"),
+            div_title=div_title.replace('"', "'"),
             mul_body=featurize_text(mul_body),
             add_body=featurize_text(add_body),
             sub_body=featurize_text(sub_body),
+            div_body=featurize_text(div_body),
         ))
     return "\n".join(parts)
 
@@ -1997,7 +2111,7 @@ def main():
 
     coords_by_op = {"mul": coords_mul}
 
-    for op in ["add", "sub"]:
+    for op in ["add", "sub", "div"]:
         print(f"  {op}: computing aligned coords...")
         H_stack, a, b = load_stack(FILES[op])
         coords = compute_aligned_coords(H_stack, ref=mul_L0)
@@ -2012,13 +2126,13 @@ def main():
 
     print("  computing joint Laplacian (ops pooled per layer)...")
     H_stacks = {"mul": H_mul}
-    for op in ["add", "sub"]:
+    for op in ["add", "sub", "div"]:
         H_op, _, _ = load_stack(FILES[op])
         H_stacks[op] = H_op
     joint_coords = compute_joint_coords(H_stacks)
     joint_per_op = split_joint_coords(joint_coords, n_pairs=coords_mul.shape[1])
     joint_layer_data = {op: coords_to_jsdict(joint_per_op[op])
-                        for op in ["mul", "add", "sub"]}
+                        for op in ["mul", "add", "sub", "div"]}
 
     print("  building stacked-3D figure...")
     fig_stacked = build_stacked_3d_figure(joint_per_op, feature_data)
@@ -2047,6 +2161,7 @@ def main():
         fig_mul_html=fig_to_html(figs["mul"], "fig-mul-inner"),
         fig_add_html=fig_to_html(figs["add"], "fig-add-inner"),
         fig_sub_html=fig_to_html(figs["sub"], "fig-sub-inner"),
+        fig_div_html=fig_to_html(figs["div"], "fig-div-inner"),
         feature_meta_json=json.dumps(FEATURE_META),
         feature_data_json=json.dumps(feature_data),
         layer_data_json=json.dumps(layer_data),
